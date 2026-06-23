@@ -1,6 +1,5 @@
 // =============================================================================
 // renderer3d.ts — Three.js renderer for glasses VTO
-// Replaces Canvas 2D rendering with proper 3D perspective rendering.
 // =============================================================================
 
 import * as THREE from 'three';
@@ -14,16 +13,13 @@ export interface Renderer3DState {
   glassesGroup: THREE.Group | null;
   currentShape: GlassShape | null;
   currentMaterial: GlassesMaterialConfig | null;
-  /** Environment map for reflections */
   envMap: THREE.Texture | null;
-  /** Ambient + directional lights */
   ambientLight: THREE.AmbientLight;
   keyLight: THREE.DirectionalLight;
   fillLight: THREE.DirectionalLight;
 }
 
 export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3DState {
-  // WebGL renderer — alpha for video background
   const renderer = new THREE.WebGLRenderer({
     canvas,
     alpha: true,
@@ -33,130 +29,99 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3DState {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMappingExposure = 1.0;
 
-  // Scene
   const scene = new THREE.Scene();
 
-  // Camera — matches face FOV
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10);
-  camera.position.set(0, 0, 0.5);
+  // Camera — matches typical webcam FOV (~60° diagonal)
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 10);
+  camera.position.set(0, 0, 1.0);
   camera.lookAt(0, 0, 0);
 
-  // Lights — three-point setup
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+  // Three-point lighting
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
   scene.add(ambientLight);
 
-  const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
   keyLight.position.set(0.3, 0.5, 0.8);
   scene.add(keyLight);
 
-  const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.5);
   fillLight.position.set(-0.5, -0.1, 0.3);
   scene.add(fillLight);
 
-  // Simple environment map for reflections
+  const rimLight = new THREE.DirectionalLight(0xffffff, 0.3);
+  rimLight.position.set(0, -0.3, -0.5);
+  scene.add(rimLight);
+
+  // Environment map for metallic reflections
   const pmremGenerator = new THREE.PMREMGenerator(renderer);
   pmremGenerator.compileEquirectangularShader();
-
   const envScene = new THREE.Scene();
   envScene.background = new THREE.Color(0x8899aa);
   const envMap = pmremGenerator.fromScene(envScene).texture;
   scene.environment = envMap;
 
-  return {
-    scene,
-    camera,
-    renderer,
-    glassesGroup: null,
-    currentShape: null,
-    currentMaterial: null,
-    envMap,
-    ambientLight,
-    keyLight,
-    fillLight,
-  };
+  return { scene, camera, renderer, glassesGroup: null, currentShape: null, currentMaterial: null, envMap, ambientLight, keyLight, fillLight };
 }
 
-/**
- * Update or create glasses model with new shape + material.
- */
-export function updateGlassesModel(
-  r3d: Renderer3DState,
-  shape: GlassShape,
-  materialConfig: GlassesMaterialConfig,
-): void {
-  // Remove old model
+export function updateGlassesModel(r3d: Renderer3DState, shape: GlassShape, material: GlassesMaterialConfig): void {
   if (r3d.glassesGroup) {
     r3d.scene.remove(r3d.glassesGroup);
     disposeGroup(r3d.glassesGroup);
     r3d.glassesGroup = null;
   }
 
-  // Create new
-  const group = createGlassesModel(shape, {}, materialConfig);
-
-  // Orient glasses: Jeeliz coords → Three.js coords
-  // Jeeliz: X right, Y down, Z into screen
-  // Three.js default: X right, Y up, Z toward camera
-  // We want glasses facing the camera → rotate around X
-  group.rotation.set(0, Math.PI, 0); // face the camera (they're modeled looking at +Z)
-
+  const group = createGlassesModel(shape, {}, material);
+  // Face the camera (+Z direction)
+  group.rotation.set(0, Math.PI, 0);
   r3d.scene.add(group);
   r3d.glassesGroup = group;
   r3d.currentShape = shape;
-  r3d.currentMaterial = materialConfig;
+  r3d.currentMaterial = material;
 }
 
 /**
- * Apply frame fit (position, rotation, scale) to the glasses model.
- * `fit` comes from computeFrameFit in normalized [0,1] coords.
+ * Apply frame fit in normalized [0,1] coords to 3D glasses.
+ * `aspect` = canvas width / height — needed to map normalized X to world X correctly.
  */
-export function applyFrameFit(r3d: Renderer3DState, fit: FrameFit, _canvasSize: number): void {
+export function applyFrameFit(r3d: Renderer3DState, fit: FrameFit, aspect: number): void {
   if (!r3d.glassesGroup) return;
+  const g = r3d.glassesGroup;
 
-  const group = r3d.glassesGroup;
+  // Camera FOV=55° at z=1, glasses at z=0 plane:
+  //   visible half-height = tan(27.5°) * 1.0 ≈ 0.5206
+  const halfFovRad = (55 * Math.PI) / 360;
+  const worldH = 2 * Math.tan(halfFovRad); // ~1.0412
+  const worldW = worldH * aspect;
 
-  // Convert normalized coords to world space
-  // Center (0.5, 0.5) → origin
-  const worldX = (fit.center.x - 0.5) * 1.2;
-  const worldY = -(fit.center.y - 0.5) * 1.2; // flip Y
-  const worldZ = fit.center.z * 0.5;
+  // Normalized [0,1] → world: center (0.5, 0.5) maps to origin
+  const worldX = (fit.center.x - 0.5) * worldW;
+  const worldY = -(fit.center.y - 0.5) * worldH;
+  const worldZ = 0;
 
-  group.position.set(worldX, worldY, worldZ);
+  g.position.set(worldX, worldY, worldZ);
+  g.rotation.z = -fit.roll;
+  g.rotation.y = Math.PI + fit.yaw;
 
-  // Roll: in-plane rotation (Z in 3D)
-  group.rotation.z = -fit.roll;
+  // Scale: fit.width × worldW = desired frame width in world units
+  // Model default width = 140mm × 0.001 = 0.14 world units
+  const MODEL_BASE_WIDTH = 0.14; // 140mm
+  const scale = (fit.width * worldW) / MODEL_BASE_WIDTH;
+  g.scale.setScalar(scale);
 
-  // Yaw: out-of-plane (Y rotation in 3D)
-  group.rotation.y = Math.PI + fit.yaw; // PI because model faces +Z
-
-  // Scale based on fit width
-  const scale = fit.width * 2.5;
-  group.scale.setScalar(scale);
-
-  // Update camera FOV based on canvas aspect
-  r3d.camera.aspect = 1; // square canvas
+  r3d.camera.aspect = aspect;
   r3d.camera.updateProjectionMatrix();
 }
 
-/**
- * Render one frame.
- */
 export function renderFrame(r3d: Renderer3DState): void {
   r3d.renderer.render(r3d.scene, r3d.camera);
 }
 
-/**
- * Resize the renderer.
- */
 export function resizeRenderer(r3d: Renderer3DState, width: number, height: number): void {
   r3d.renderer.setSize(width, height, false);
 }
 
-/**
- * Clean up.
- */
 export function disposeRenderer(r3d: Renderer3DState): void {
   if (r3d.glassesGroup) {
     r3d.scene.remove(r3d.glassesGroup);

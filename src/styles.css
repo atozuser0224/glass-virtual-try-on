@@ -93,10 +93,10 @@ button:active {
   position: relative;
   flex-grow: 1;
   width: 100%;
-  max-width: calc(100vh - 70px);
   margin-right: auto;
   margin-left: auto;
   background: #000;
+  overflow: hidden;
 }
 
 #JeelizVTOWidgetCanvas {
@@ -285,6 +285,6 @@ button:active {
 
 @media (min-width: 1200px) {
   #JeelizVTOWidget {
-    max-width: 720px;
+    max-width: 960px;
   }
 }

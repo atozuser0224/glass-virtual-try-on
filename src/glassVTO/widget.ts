@@ -15,7 +15,11 @@ import {
   type LensesGradient,
 } from './jeeliz-math';
 import { getModelBySku, type GlassModel } from './catalog';
-import { createRenderer3D, updateGlassesModel, applyFrameFit, renderFrame, resizeRenderer, disposeRenderer, type Renderer3DState } from './renderer3d';
+import {
+  createRenderer3D, updateGlassesModel, applyFrameFit,
+  renderFrame, resizeRenderer, disposeRenderer,
+  type Renderer3DState,
+} from './renderer3d';
 import { DEFAULT_MATERIALS, type GlassesMaterialConfig } from './glasses3d';
 
 // ---------------------------------------------------------------------------
@@ -54,28 +58,23 @@ interface RuntimeState {
   onError: (errorLabel: string) => void;
   callbacks: WidgetCallbacks;
 
-  // Three.js rendering
+  // Three.js
   r3d: Renderer3DState;
   videoTexture: THREE.VideoTexture;
   videoPlane: THREE.Mesh;
+  canvasAspect: number;
 
-  // Jeeliz interactive state
+  // Interactive
   pinchScale: number;
   offsetX: number;
   offsetY: number;
 
-  // Gesture tracking
+  // Gesture
   gestureActive: boolean;
   gestureType: 'drag' | 'pinch' | null;
   gestureLastX: number;
   gestureLastY: number;
   gestureLastDist: number;
-
-  // Search target
-  searchMask: HTMLImageElement | null;
-  searchColor: number;
-  searchRotation: number;
-  searchRotationSpeed: number;
 
   // Config
   fittingParams: FittingParams;
@@ -104,41 +103,31 @@ const PINCH_SPEED = 0.015;
 const OFFSET_MAX = 0.3;
 const OFFSET_SPEED = 0.005;
 
-// Material mapping: model SKU → our material config
+let state: RuntimeState | null = null;
+
+// ---------------------------------------------------------------------------
+// Material resolver
+// ---------------------------------------------------------------------------
+
 function getMaterialForModel(model: GlassModel): GlassesMaterialConfig {
-  // Try to match by color characteristics
   const fc = model.frameColor;
   const r = parseInt(fc.substring(1, 3), 16);
   const g = parseInt(fc.substring(3, 5), 16);
   const b = parseInt(fc.substring(5, 7), 16);
-
   const brightness = (r + g + b) / 3;
-  const saturation = Math.max(r, g, b) - Math.min(r, g, b);
 
   if (brightness > 160) return { ...DEFAULT_MATERIALS.silver_dark, lensColor: model.lensColor, frameColor: model.frameColor, bridgeColor: model.bridgeColor };
   if (brightness < 60) return { ...DEFAULT_MATERIALS.black, lensColor: model.lensColor, frameColor: model.frameColor, bridgeColor: model.bridgeColor };
-  if (r > g + 40 && r > b + 40 && saturation > 40) return { ...DEFAULT_MATERIALS.copper_pink, lensColor: model.lensColor, frameColor: model.frameColor, bridgeColor: model.bridgeColor };
-  if (g > 100 && r > 100 && b < 100) return { ...DEFAULT_MATERIALS.gold_green, lensColor: model.lensColor, frameColor: model.frameColor, bridgeColor: model.bridgeColor };
-  if (saturation < 30) return { ...DEFAULT_MATERIALS.darkbrown, lensColor: model.lensColor, frameColor: model.frameColor, bridgeColor: model.bridgeColor };
-
-  return {
-    frameColor: model.frameColor,
-    lensColor: model.lensColor,
-    bridgeColor: model.bridgeColor,
-    lensOpacity: 0.25,
-    metalness: 0.3,
-    roughness: 0.5,
-  };
+  if (r > g + 40 && r > b + 40) return { ...DEFAULT_MATERIALS.copper_pink, lensColor: model.lensColor, frameColor: model.frameColor, bridgeColor: model.bridgeColor };
+  return { frameColor: model.frameColor, lensColor: model.lensColor, bridgeColor: model.bridgeColor, lensOpacity: 0.25, metalness: 0.3, roughness: 0.5 };
 }
-
-let state: RuntimeState | null = null;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export const GLASSVTOWIDGET = {
-  VERSION: '0.4.0-3d',
+  VERSION: '0.5.0',
   start,
   load,
   enter_adjustMode,
@@ -165,18 +154,9 @@ async function start(options: WidgetStartOptions = {}): Promise<void> {
   video.muted = true;
   video.playsInline = true;
 
-  let searchMask: HTMLImageElement | null = null;
-  if (options.searchImageMask) {
-    searchMask = new Image();
-    searchMask.src = options.searchImageMask;
-  }
-
-  const lensesGradient = computeLensesGradient(0.28, DEFAULT_LENSES_GRADIENT.height, DEFAULT_LENSES_GRADIENT.smoothness, DEFAULT_LENSES_GRADIENT.alphaMinFactor);
-
-  // Three.js setup
   const r3d = createRenderer3D(canvas);
 
-  // Video background plane
+  // Video background plane — sized during resize
   const videoTexture = new THREE.VideoTexture(video);
   videoTexture.minFilter = THREE.LinearFilter;
   videoTexture.magFilter = THREE.LinearFilter;
@@ -186,24 +166,23 @@ async function start(options: WidgetStartOptions = {}): Promise<void> {
   const videoPlaneMat = new THREE.MeshBasicMaterial({ map: videoTexture, depthTest: false, depthWrite: false });
   const videoPlane = new THREE.Mesh(videoPlaneGeo, videoPlaneMat);
   videoPlane.renderOrder = -1;
-  videoPlane.position.z = -0.01;
+  videoPlane.position.z = -0.6;
   r3d.scene.add(videoPlane);
 
-  // Initial glasses model
-  const materialConfig = getMaterialForModel(model);
-  updateGlassesModel(r3d, model.shape, materialConfig);
+  // Initial glasses
+  const matConfig = getMaterialForModel(model);
+  updateGlassesModel(r3d, model.shape, matConfig);
 
   state = {
     placeholder, canvas, video, landmarker: null, animationId: 0, model,
     lastFit: null, prevTimestamp: 0, isAdjustMode: false,
     isShadow: options.isShadow ?? true, onError, callbacks: options.callbacks ?? {},
-    r3d, videoTexture, videoPlane,
-    pinchScale: 1.0, offsetX: 0, offsetY: 0,
+    r3d, videoTexture, videoPlane, canvasAspect: 1,
+    pinchScale: 1, offsetX: 0, offsetY: 0,
     gestureActive: false, gestureType: null, gestureLastX: 0, gestureLastY: 0, gestureLastDist: 0,
-    searchMask, searchColor: options.searchImageColor ?? 0xeeeeee, searchRotation: 0,
-    searchRotationSpeed: options.searchImageRotationSpeed ?? 30,
     fittingParams: { ...DEFAULT_FITTING_PARAMS },
-    templeBend: { ...DEFAULT_TEMPLE_BEND }, lensesGradient,
+    templeBend: { ...DEFAULT_TEMPLE_BEND },
+    lensesGradient: computeLensesGradient(0.28, DEFAULT_LENSES_GRADIENT.height, DEFAULT_LENSES_GRADIENT.smoothness, DEFAULT_LENSES_GRADIENT.alphaMinFactor),
   };
 
   bindGestureEvents(placeholder);
@@ -232,7 +211,6 @@ async function start(options: WidgetStartOptions = {}): Promise<void> {
     syncDomForLoading(false);
     options.callbacks?.LOADING_END?.();
     onError(error instanceof DOMException ? 'WEBCAM_UNAVAILABLE' : 'FATAL');
-    renderSearchScreen();
   }
 }
 
@@ -240,14 +218,11 @@ function load(sku: string): void {
   const model = getModelBySku(sku);
   if (!model) { state?.onError('INVALID_SKU'); return; }
   if (!state) return;
-
   state.model = model;
-  state.pinchScale = 1.0;
+  state.pinchScale = 1;
   state.offsetX = 0;
   state.offsetY = 0;
-
-  const matConfig = getMaterialForModel(model);
-  updateGlassesModel(state.r3d, model.shape, matConfig);
+  updateGlassesModel(state.r3d, model.shape, getMaterialForModel(model));
 }
 
 function enter_adjustMode(): void {
@@ -270,7 +245,7 @@ function exit_adjustMode(): void {
 
 function capture_image(): string {
   if (!state) throw new Error('call start() first');
-  renderFrame(state.r3d); // ensure latest is drawn
+  renderFrame(state.r3d);
   return state.canvas.toDataURL('image/png');
 }
 
@@ -282,16 +257,14 @@ function destroy(): void {
   if (stream instanceof MediaStream) stream.getTracks().forEach((t) => t.stop());
   unbindGestureEvents(state.placeholder);
   state.videoTexture.dispose();
-  if (state.videoPlane) {
-    state.videoPlane.geometry.dispose();
-    (state.videoPlane.material as THREE.Material).dispose();
-  }
+  state.videoPlane.geometry.dispose();
+  (state.videoPlane.material as THREE.Material).dispose();
   disposeRenderer(state.r3d);
   state = null;
 }
 
 // ---------------------------------------------------------------------------
-// Gesture handling
+// Gestures
 // ---------------------------------------------------------------------------
 
 function bindGestureEvents(el: HTMLElement): void {
@@ -319,14 +292,11 @@ function onGestureStart(e: MouseEvent | TouchEvent): void {
   e.preventDefault();
   const pos = getEventPos(e);
   if (e instanceof TouchEvent && e.touches.length === 2) {
-    state.gestureActive = true;
-    state.gestureType = 'pinch';
+    state.gestureActive = true; state.gestureType = 'pinch';
     state.gestureLastDist = touchDist(e);
   } else {
-    state.gestureActive = true;
-    state.gestureType = 'drag';
-    state.gestureLastX = pos[0].x;
-    state.gestureLastY = pos[0].y;
+    state.gestureActive = true; state.gestureType = 'drag';
+    state.gestureLastX = pos[0].x; state.gestureLastY = pos[0].y;
   }
 }
 
@@ -345,15 +315,13 @@ function onGestureMove(e: MouseEvent | TouchEvent): void {
     const dy = (pos[0].y - state.gestureLastY) / state.canvas.height;
     state.offsetX = clamp(state.offsetX + dx * OFFSET_SPEED * 30, -OFFSET_MAX, OFFSET_MAX);
     state.offsetY = clamp(state.offsetY + dy * OFFSET_SPEED * 30, -OFFSET_MAX, OFFSET_MAX);
-    state.gestureLastX = pos[0].x;
-    state.gestureLastY = pos[0].y;
+    state.gestureLastX = pos[0].x; state.gestureLastY = pos[0].y;
   }
 }
 
 function onGestureEnd(): void {
   if (!state) return;
-  state.gestureActive = false;
-  state.gestureType = null;
+  state.gestureActive = false; state.gestureType = null;
 }
 
 function onWheel(e: WheelEvent): void {
@@ -381,77 +349,72 @@ function renderLoop(): void {
   if (!state) return;
 
   const now = performance.now();
-  resizeCanvas();
+  resize();
 
-  // Update video texture
   if (state.video.readyState >= state.video.HAVE_CURRENT_DATA) {
     state.videoTexture.needsUpdate = true;
   }
 
-  // Mirror the video plane for selfie view
-  state.videoPlane.scale.x = -1;
+  state.videoPlane.scale.x = -1; // mirror selfie
 
-  // Detect face
   const result = state.landmarker?.detectForVideo(state.video, now);
   const landmarks = result?.faceLandmarks?.[0];
 
   if (landmarks) {
-    const anchors = toAnchors(landmarks);
-    const rawFit = computeFrameFit(anchors, state.fittingParams);
-
+    const rawFit = computeFrameFit(toAnchors(landmarks), state.fittingParams);
     rawFit.center.x += state.offsetX;
     rawFit.center.y += state.offsetY;
     rawFit.width *= state.pinchScale * (state.model.preScale ?? 1.0);
 
     const dt = state.prevTimestamp > 0 ? now - state.prevTimestamp : 0;
-    const smoothedFit = temporalSmoothFit(rawFit, state.lastFit, dt, SMOOTHING_FACTOR, state.fittingParams.pdScale, CONSISTENCY_THRESHOLD);
-
-    state.lastFit = smoothedFit;
+    const fit = temporalSmoothFit(rawFit, state.lastFit, dt, SMOOTHING_FACTOR, state.fittingParams.pdScale, CONSISTENCY_THRESHOLD);
+    state.lastFit = fit;
     state.prevTimestamp = now;
 
-    // Apply to 3D glasses
-    applyFrameFit(state.r3d, smoothedFit, state.canvas.width);
-
-    // Shadow via soft directional light adjustment
-    if (state.isShadow && state.r3d.glassesGroup) {
-      state.r3d.keyLight.intensity = 1.2;
-      state.r3d.keyLight.castShadow = false;
-    }
+    applyFrameFit(state.r3d, fit, state.canvasAspect);
   } else {
-    // Face lost — fade to search mode
     state.lastFit = null;
     state.prevTimestamp = 0;
-    state.searchRotation += state.searchRotationSpeed * (1 / 60);
   }
 
   renderFrame(state.r3d);
   state.animationId = requestAnimationFrame(renderLoop);
 }
 
-function renderSearchScreen(): void {
-  if (!state) return;
-  resizeCanvas();
-  state.r3d.renderer.setClearColor(new THREE.Color(0xeeeeee));
-  renderFrame(state.r3d);
-}
-
 // ---------------------------------------------------------------------------
-// Canvas sizing
+// Canvas + video plane sizing — respects full container aspect ratio
 // ---------------------------------------------------------------------------
 
-function resizeCanvas(): void {
+function resize(): void {
   if (!state) return;
   const rect = state.placeholder.getBoundingClientRect();
-  const size = Math.max(1, Math.floor(Math.min(rect.width, rect.height) * devicePixelRatio));
-  if (state.canvas.width !== size || state.canvas.height !== size) {
-    state.canvas.width = size;
-    state.canvas.height = size;
-    resizeRenderer(state.r3d, size, size);
+
+  // Use FULL container dimensions — no square cropping
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  const w = Math.max(2, Math.floor(rect.width * dpr));
+  const h = Math.max(2, Math.floor(rect.height * dpr));
+
+  if (state.canvas.width !== w || state.canvas.height !== h) {
+    state.canvas.width = w;
+    state.canvas.height = h;
+    state.canvasAspect = w / h;
+    resizeRenderer(state.r3d, w, h);
+
+    // Size video plane to exactly fill camera viewport at z=-0.6
+    // Camera FOV=55°, at z=1 looking at z=-0.6 plane:
+    //   visible half-height = tan(27.5°) * (1.0 - (-0.6)) = 0.5206 * 1.6 ≈ 0.833
+    // PlaneGeometry is 2x2, so scale to make height = 2 * 0.833
+    const halfFovRad = (55 * Math.PI) / 360; // 27.5°
+    const camToPlane = 1.0 - (-0.6); // 1.6
+    const visibleHalfHeight = Math.tan(halfFovRad) * camToPlane; // ≈ 0.833
+    const planeScaleY = visibleHalfHeight; // PlaneGeometry(2,2) → height becomes 2*planeScaleY
+    const planeScaleX = planeScaleY * state.canvasAspect;
+    state.videoPlane.scale.set(planeScaleX, planeScaleY, 1);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Landmark helpers
+// Landmarks
 // ---------------------------------------------------------------------------
 
 function toAnchors(landmarks: Point3[]): FaceAnchors {
@@ -463,7 +426,7 @@ function toAnchors(landmarks: Point3[]): FaceAnchors {
 }
 
 // ---------------------------------------------------------------------------
-// DOM helpers
+// DOM
 // ---------------------------------------------------------------------------
 
 function syncDomForLoading(isLoading: boolean): void {
