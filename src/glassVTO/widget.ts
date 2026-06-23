@@ -126,7 +126,7 @@ function getMaterialForModel(model: GlassModel): GlassesMaterialConfig {
 // ---------------------------------------------------------------------------
 
 export const GLASSVTOWIDGET = {
-  VERSION: '0.6.0-mobile',
+  VERSION: '0.6.1-orientation',
   start, load, enter_adjustMode, exit_adjustMode, capture_image, destroy,
 };
 
@@ -352,17 +352,16 @@ function renderLoop(): void {
     state.videoTexture.needsUpdate = true;
   }
 
-  // Mirror + 180° rotation (front camera on phones is physically rotated)
-  // scale x/y set by resize() — we flip signs here for correct orientation
+  // Mirror front camera preview horizontally while keeping the person upright.
   state.videoPlane.scale.x = -Math.abs(state.videoPlane.scale.x); // mirror
-  state.videoPlane.scale.y = -Math.abs(state.videoPlane.scale.y); // 180° rotate
+  state.videoPlane.scale.y = Math.abs(state.videoPlane.scale.y);
 
   const result = state.landmarker?.detectForVideo(state.video, now);
   const landmarks = result?.faceLandmarks?.[0];
 
   if (landmarks) {
     const rawFit = computeFrameFit(toAnchors(landmarks), state.fittingParams);
-    rawFit.center.x += state.offsetX;
+    rawFit.center.x -= state.offsetX;
     rawFit.center.y += state.offsetY;
     rawFit.width *= state.pinchScale * (state.model.preScale ?? 1.0);
 

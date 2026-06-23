@@ -96,13 +96,14 @@ export function applyFrameFit(r3d: Renderer3DState, fit: FrameFit, aspect: numbe
   const worldW = worldH * aspect;
 
   // Normalized [0,1] → world: center (0.5, 0.5) maps to origin
-  const worldX = (fit.center.x - 0.5) * worldW;
+  // Video plane is mirrored horizontally only; camera Y still points down.
+  const worldX = -(fit.center.x - 0.5) * worldW;
   const worldY = -(fit.center.y - 0.5) * worldH;
   const worldZ = 0;
 
   g.position.set(worldX, worldY, worldZ);
-  g.rotation.z = -fit.roll;
-  g.rotation.y = Math.PI + fit.yaw;
+  g.rotation.z = fit.roll;
+  g.rotation.y = Math.PI - fit.yaw;
 
   // Scale: fit.width × worldW = desired frame width in world units
   // Model default width = 140mm × 0.001 = 0.14 world units
