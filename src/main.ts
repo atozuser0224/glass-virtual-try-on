@@ -1,4 +1,4 @@
-import { JEELIZVTOWIDGET } from 'jeelizvtowidget';
+import { GLASSVTOWIDGET } from './glassVTO/widget';
 import './styles.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
@@ -14,7 +14,7 @@ const SEARCH_IMAGE_MASK = 'https://appstatic.jeeliz.com/jeewidget/images/target5
 app.innerHTML = `
   <main class="content">
     <header class="header">
-      <div class="headerTitle">Jeeliz VTO Widget</div>
+      <div class="headerTitle">Glass VTO Widget</div>
     </header>
 
     <section id="JeelizVTOWidget" aria-label="Jeeliz glasses virtual try-on widget">
@@ -51,9 +51,11 @@ app.innerHTML = `
 const widget = app.querySelector<HTMLElement>('#JeelizVTOWidget');
 const resizeButton = app.querySelector<HTMLButtonElement>('#buttonResizeCanvas');
 const loadSkuButton = app.querySelector<HTMLButtonElement>('#buttonLoadSku');
+const adjustButton = app.querySelector<HTMLButtonElement>('#JeelizVTOWidgetAdjust');
+const adjustExitButton = app.querySelector<HTMLButtonElement>('#JeelizVTOWidgetAdjustExit');
 const modelButtons = app.querySelectorAll<HTMLButtonElement>('[data-sku]');
 
-if (!widget || !resizeButton || !loadSkuButton) {
+if (!widget || !resizeButton || !loadSkuButton || !adjustButton || !adjustExitButton) {
   throw new Error('Required Jeeliz widget elements are missing.');
 }
 
@@ -78,18 +80,18 @@ function resizeWidget(): void {
 function loadModelBySku(): void {
   const sku = window.prompt('Please enter a glasses model SKU:', 'rayban_wayfarer_havane_marron');
   if (sku) {
-    JEELIZVTOWIDGET.load(sku);
+    GLASSVTOWIDGET.load(sku);
   }
 }
 
 function startWidget(): void {
-  JEELIZVTOWIDGET.start({
+  void GLASSVTOWIDGET.start({
     isShadow: getIsShadow(),
     sku: getInitialSku(),
     searchImageMask: SEARCH_IMAGE_MASK,
     searchImageColor: 0xeeeeee,
     callbackReady: () => {
-      console.log('INFO: JEELIZVTOWIDGET is ready :)');
+      console.log('INFO: GLASSVTOWIDGET is ready :)');
     },
     onError: (errorLabel: string) => {
       window.alert(`An error happened. errorLabel = ${errorLabel}`);
@@ -99,11 +101,13 @@ function startWidget(): void {
 
 resizeButton.addEventListener('click', resizeWidget);
 loadSkuButton.addEventListener('click', loadModelBySku);
+adjustButton.addEventListener('click', () => GLASSVTOWIDGET.enter_adjustMode());
+adjustExitButton.addEventListener('click', () => GLASSVTOWIDGET.exit_adjustMode());
 modelButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const sku = button.dataset.sku;
     if (sku) {
-      JEELIZVTOWIDGET.load(sku);
+      GLASSVTOWIDGET.load(sku);
     }
   });
 });
