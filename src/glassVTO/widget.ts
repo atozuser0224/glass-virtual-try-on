@@ -58,25 +58,21 @@ interface RuntimeState {
   onError: (errorLabel: string) => void;
   callbacks: WidgetCallbacks;
 
-  // Three.js
   r3d: Renderer3DState;
   videoTexture: THREE.VideoTexture;
   videoPlane: THREE.Mesh;
   canvasAspect: number;
 
-  // Interactive
   pinchScale: number;
   offsetX: number;
   offsetY: number;
 
-  // Gesture
   gestureActive: boolean;
   gestureType: 'drag' | 'pinch' | null;
   gestureLastX: number;
   gestureLastY: number;
   gestureLastDist: number;
 
-  // Config
   fittingParams: FittingParams;
   templeBend: { beginBendZ: number; bendStrength: number };
   lensesGradient: LensesGradient;
@@ -103,6 +99,9 @@ const PINCH_SPEED = 0.015;
 const OFFSET_MAX = 0.3;
 const OFFSET_SPEED = 0.005;
 
+// Mobile performance: cap pixel ratio
+const MAX_DPR = 1.5;
+
 let state: RuntimeState | null = null;
 
 // ---------------------------------------------------------------------------
@@ -127,13 +126,8 @@ function getMaterialForModel(model: GlassModel): GlassesMaterialConfig {
 // ---------------------------------------------------------------------------
 
 export const GLASSVTOWIDGET = {
-  VERSION: '0.5.0',
-  start,
-  load,
-  enter_adjustMode,
-  exit_adjustMode,
-  capture_image,
-  destroy,
+  VERSION: '0.6.0-mobile',
+  start, load, enter_adjustMode, exit_adjustMode, capture_image, destroy,
 };
 
 async function start(options: WidgetStartOptions = {}): Promise<void> {
@@ -153,10 +147,11 @@ async function start(options: WidgetStartOptions = {}): Promise<void> {
   video.autoplay = true;
   video.muted = true;
   video.playsInline = true;
+  video.setAttribute('playsinline', '');
 
   const r3d = createRenderer3D(canvas);
 
-  // Video background plane — sized during resize
+  // Video background plane
   const videoTexture = new THREE.VideoTexture(video);
   videoTexture.minFilter = THREE.LinearFilter;
   videoTexture.magFilter = THREE.LinearFilter;
@@ -166,12 +161,11 @@ async function start(options: WidgetStartOptions = {}): Promise<void> {
   const videoPlaneMat = new THREE.MeshBasicMaterial({ map: videoTexture, depthTest: false, depthWrite: false });
   const videoPlane = new THREE.Mesh(videoPlaneGeo, videoPlaneMat);
   videoPlane.renderOrder = -1;
-  videoPlane.position.z = -0.6;
+  videoPlane.position.z = -0.5;
   r3d.scene.add(videoPlane);
 
   // Initial glasses
-  const matConfig = getMaterialForModel(model);
-  updateGlassesModel(r3d, model.shape, matConfig);
+  updateGlassesModel(r3d, model.shape, getMaterialForModel(model));
 
   state = {
     placeholder, canvas, video, landmarker: null, animationId: 0, model,
@@ -239,7 +233,7 @@ function exit_adjustMode(): void {
   state.isAdjustMode = false;
   state.callbacks.ADJUST_END?.();
   document.getElementById('JeelizVTOWidgetAdjust')?.style.setProperty('display', 'inline-block');
-  document.getElementById('JeelizVTOWidgetChangeModelContainer')?.style.setProperty('display', 'block');
+  document.getElementById('JeelizVTOWidgetChangeModelContainer')?.style.setProperty('display', 'flex');
   document.getElementById('JeelizVTOWidgetAdjustNotice')?.style.setProperty('display', 'none');
 }
 
@@ -271,6 +265,7 @@ function bindGestureEvents(el: HTMLElement): void {
   el.addEventListener('touchstart', onGestureStart, { passive: false });
   el.addEventListener('touchmove', onGestureMove, { passive: false });
   el.addEventListener('touchend', onGestureEnd);
+  el.addEventListener('touchcancel', onGestureEnd);
   el.addEventListener('mousedown', onGestureStart);
   window.addEventListener('mousemove', onGestureMove);
   window.addEventListener('mouseup', onGestureEnd);
@@ -281,6 +276,7 @@ function unbindGestureEvents(el: HTMLElement): void {
   el.removeEventListener('touchstart', onGestureStart);
   el.removeEventListener('touchmove', onGestureMove);
   el.removeEventListener('touchend', onGestureEnd);
+  el.removeEventListener('touchcancel', onGestureEnd);
   el.removeEventListener('mousedown', onGestureStart);
   window.removeEventListener('mousemove', onGestureMove);
   window.removeEventListener('mouseup', onGestureEnd);
@@ -291,7 +287,7 @@ function onGestureStart(e: MouseEvent | TouchEvent): void {
   if (!state?.isAdjustMode) return;
   e.preventDefault();
   const pos = getEventPos(e);
-  if (e instanceof TouchEvent && e.touches.length === 2) {
+  if (e instanceof TouchEvent && e.touches.length >= 2) {
     state.gestureActive = true; state.gestureType = 'pinch';
     state.gestureLastDist = touchDist(e);
   } else {
@@ -305,16 +301,18 @@ function onGestureMove(e: MouseEvent | TouchEvent): void {
   e.preventDefault();
   const pos = getEventPos(e);
 
-  if (e instanceof TouchEvent && e.touches.length === 2 && state.gestureType === 'pinch') {
+  if (e instanceof TouchEvent && e.touches.length >= 2 && state.gestureType === 'pinch') {
     const dist = touchDist(e);
-    const delta = (state.gestureLastDist - dist) / state.canvas.width;
-    state.pinchScale = clamp(state.pinchScale + delta * PINCH_SPEED * 30, PINCH_SCALE_MIN, PINCH_SCALE_MAX);
+    if (state.gestureLastDist > 0) {
+      const delta = (state.gestureLastDist - dist) / Math.min(state.canvas.width, state.canvas.height);
+      state.pinchScale = clamp(state.pinchScale + delta * PINCH_SPEED * 20, PINCH_SCALE_MIN, PINCH_SCALE_MAX);
+    }
     state.gestureLastDist = dist;
   } else if (state.gestureType === 'drag') {
     const dx = (pos[0].x - state.gestureLastX) / state.canvas.width;
     const dy = (pos[0].y - state.gestureLastY) / state.canvas.height;
-    state.offsetX = clamp(state.offsetX + dx * OFFSET_SPEED * 30, -OFFSET_MAX, OFFSET_MAX);
-    state.offsetY = clamp(state.offsetY + dy * OFFSET_SPEED * 30, -OFFSET_MAX, OFFSET_MAX);
+    state.offsetX = clamp(state.offsetX + dx * OFFSET_SPEED * 20, -OFFSET_MAX, OFFSET_MAX);
+    state.offsetY = clamp(state.offsetY + dy * OFFSET_SPEED * 20, -OFFSET_MAX, OFFSET_MAX);
     state.gestureLastX = pos[0].x; state.gestureLastY = pos[0].y;
   }
 }
@@ -327,8 +325,8 @@ function onGestureEnd(): void {
 function onWheel(e: WheelEvent): void {
   if (!state?.isAdjustMode) return;
   e.preventDefault();
-  const delta = e.deltaY > 0 ? 0.01 : -0.01;
-  state.pinchScale = clamp(state.pinchScale + delta * PINCH_SPEED * 30, PINCH_SCALE_MIN, PINCH_SCALE_MAX);
+  const delta = e.deltaY > 0 ? 0.015 : -0.015;
+  state.pinchScale = clamp(state.pinchScale + delta * PINCH_SPEED * 20, PINCH_SCALE_MIN, PINCH_SCALE_MAX);
 }
 
 function getEventPos(e: MouseEvent | TouchEvent): Array<{ x: number; y: number }> {
@@ -347,7 +345,6 @@ function touchDist(e: TouchEvent): number {
 
 function renderLoop(): void {
   if (!state) return;
-
   const now = performance.now();
   resize();
 
@@ -355,7 +352,7 @@ function renderLoop(): void {
     state.videoTexture.needsUpdate = true;
   }
 
-  state.videoPlane.scale.x = -1; // mirror selfie
+  state.videoPlane.scale.x = -1; // mirror
 
   const result = state.landmarker?.detectForVideo(state.video, now);
   const landmarks = result?.faceLandmarks?.[0];
@@ -382,35 +379,54 @@ function renderLoop(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Canvas + video plane sizing — respects full container aspect ratio
+// Canvas + video sizing — handles portrait/landscape/any aspect
 // ---------------------------------------------------------------------------
 
 function resize(): void {
   if (!state) return;
   const rect = state.placeholder.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return;
 
-  // Use FULL container dimensions — no square cropping
-  const dpr = Math.min(window.devicePixelRatio, 2);
-  const w = Math.max(2, Math.floor(rect.width * dpr));
-  const h = Math.max(2, Math.floor(rect.height * dpr));
+  const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+  const w = Math.floor(rect.width * dpr);
+  const h = Math.floor(rect.height * dpr);
 
   if (state.canvas.width !== w || state.canvas.height !== h) {
     state.canvas.width = w;
     state.canvas.height = h;
     state.canvasAspect = w / h;
     resizeRenderer(state.r3d, w, h);
-
-    // Size video plane to exactly fill camera viewport at z=-0.6
-    // Camera FOV=55°, at z=1 looking at z=-0.6 plane:
-    //   visible half-height = tan(27.5°) * (1.0 - (-0.6)) = 0.5206 * 1.6 ≈ 0.833
-    // PlaneGeometry is 2x2, so scale to make height = 2 * 0.833
-    const halfFovRad = (55 * Math.PI) / 360; // 27.5°
-    const camToPlane = 1.0 - (-0.6); // 1.6
-    const visibleHalfHeight = Math.tan(halfFovRad) * camToPlane; // ≈ 0.833
-    const planeScaleY = visibleHalfHeight; // PlaneGeometry(2,2) → height becomes 2*planeScaleY
-    const planeScaleX = planeScaleY * state.canvasAspect;
-    state.videoPlane.scale.set(planeScaleX, planeScaleY, 1);
   }
+
+  // Scale video plane to COVER the viewport (preserving video aspect)
+  // Camera FOV=55° at z=1, video plane at z=-0.5
+  // visible half-height at z=-0.5 = tan(27.5°) * 1.5 ≈ 0.781
+  const halfFov = (55 * Math.PI) / 360;
+  const camToPlane = 1.0 - (-0.5); // 1.5
+  const visibleHalfH = Math.tan(halfFov) * camToPlane;
+
+  const videoW = state.video.videoWidth || 640;
+  const videoH = state.video.videoHeight || 480;
+  const videoAspect = videoW / Math.max(videoH, 1); // landscape ~1.33
+
+  const canvasAspect = state.canvasAspect;
+
+  // "cover" — scale video plane so it fills the viewport
+  let planeScaleX: number;
+  let planeScaleY: number;
+
+  if (canvasAspect > videoAspect) {
+    // Canvas wider than video → match height, overflow width
+    planeScaleY = visibleHalfH;
+    planeScaleX = planeScaleY * canvasAspect;
+  } else {
+    // Canvas taller than video → match width, overflow height
+    planeScaleX = visibleHalfH * canvasAspect;
+    planeScaleY = planeScaleX / videoAspect;
+  }
+
+  // PlaneGeometry is 2×2, so we need scale to make 2*scale = desired size
+  state.videoPlane.scale.set(planeScaleX, planeScaleY, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +446,7 @@ function toAnchors(landmarks: Point3[]): FaceAnchors {
 // ---------------------------------------------------------------------------
 
 function syncDomForLoading(isLoading: boolean): void {
-  document.getElementById('JeelizVTOWidgetLoading')?.style.setProperty('display', isLoading ? 'block' : 'none');
+  document.getElementById('JeelizVTOWidgetLoading')?.style.setProperty('display', isLoading ? 'flex' : 'none');
   document.getElementById('JeelizVTOWidgetAdjust')?.style.setProperty('display', isLoading ? 'none' : 'inline-block');
-  document.getElementById('JeelizVTOWidgetChangeModelContainer')?.style.setProperty('display', isLoading ? 'none' : 'block');
+  document.getElementById('JeelizVTOWidgetChangeModelContainer')?.style.setProperty('display', isLoading ? 'none' : 'flex');
 }
