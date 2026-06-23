@@ -352,7 +352,10 @@ function renderLoop(): void {
     state.videoTexture.needsUpdate = true;
   }
 
-  state.videoPlane.scale.x = -1; // mirror
+  // Mirror + 180° rotation (front camera on phones is physically rotated)
+  // scale x/y set by resize() — we flip signs here for correct orientation
+  state.videoPlane.scale.x = -Math.abs(state.videoPlane.scale.x); // mirror
+  state.videoPlane.scale.y = -Math.abs(state.videoPlane.scale.y); // 180° rotate
 
   const result = state.landmarker?.detectForVideo(state.video, now);
   const landmarks = result?.faceLandmarks?.[0];
