@@ -7,10 +7,15 @@ export default defineConfig({
   server: {
     https: true,
     host: '127.0.0.1',
-    port: 5173
+    port: 5173,
   },
   preview: {
     host: '127.0.0.1',
-    port: 4173
-  }
+    port: 4173,
+  },
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    sourcemap: false,
+  },
 });
